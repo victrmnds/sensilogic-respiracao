@@ -8,12 +8,14 @@
 <!--
   SensiLogic - página de respiração guiada (RF05).
 
-  Página única e estática: não tem segredo nem tópico gravado. Pode ser
-  aberta direto do disco (file://) ou publicada em qualquer hospedagem
-  estática. Só acessa a rede quando o fragmento traz "ajuda=<topico>" e a
-  pessoa confirma o pedido de ajuda (POST em https://ntfy.sh/<topico>).
-  Sem esse dado (versão pública, link da notificação de crise), o botão
-  "Pedir ajuda" não aparece e a página não acessa nada.
+  Página única e estática. Pode ser aberta direto do disco (file://) ou
+  publicada em qualquer hospedagem estática. O tópico ntfy do cuidador fica
+  GRAVADO nesta página (TOPICO_AJUDA_PADRAO, no início do script): o botão
+  "Pedir ajuda" aparece sempre, inclusive na versão pública (link da
+  notificação de crise, "?respirar=1", sem fragmento). Um "ajuda=<topico>"
+  válido no fragmento tem prioridade sobre o padrão. A página só acessa a
+  rede quando a pessoa confirma o pedido de ajuda (POST em
+  https://ntfy.sh/<topico>).
 
   Parâmetros (qualquer um com respirar=1 começa o exercício sem clicar):
       respiracao.html?respirar=1     na query: é o link do ntfy da base
@@ -23,7 +25,7 @@
       respiracao.html#t=<raiz>&respirar=1&ajuda=<topico>
                                      o que o script do PC abre ("ajuda" só
                                      vem se ntfy.topico_cuidador estiver
-                                     no config.toml)
+                                     no config.toml; sem ele, vale o padrão)
   "ajuda" é lido SÓ do fragmento, nunca da query.
   O parâmetro "t" (raiz dos tópicos MQTT) só será usado pelo plano B
   opcional, em que a página assina o broker. Na versão atual ele é ignorado.
@@ -189,8 +191,8 @@
 </main>
 
 <footer>
-  <!-- só aparece com "ajuda=<topico>" no fragmento (cópia aberta pelo PC) -->
-  <button id="bt-ajuda" class="ajuda escondido" type="button">Pedir ajuda</button>
+  <!-- sempre visível: o tópico vem do fragmento ou do padrão gravado no script -->
+  <button id="bt-ajuda" class="ajuda" type="button">Pedir ajuda</button>
   <p id="ajuda-status" class="escondido" role="status"></p>
   <button id="bt-som" type="button" aria-pressed="false">Ligar som</button>
   <button id="bt-vibra" type="button" aria-pressed="false">Ligar vibração</button>
@@ -202,6 +204,14 @@
 
 <script>
 "use strict";
+
+// ------------------------------------------------- tópico do pedido de ajuda
+// ATENÇÃO: este é o tópico ntfy do CUIDADOR e ele fica EXPOSTO no código
+// desta página, que é pública (GitHub Pages). Quem abrir a página pode ver
+// o tópico e mandar pedidos falsos ao cuidador. Foi uma escolha consciente,
+// só para o teste do projeto. Um "ajuda=<topico>" válido no fragmento da
+// URL tem prioridade sobre este valor.
+const TOPICO_AJUDA_PADRAO = "sensilogic-cuidador-3ca8a8937efd0760";
 
 // ----------------------------------------------------------- configuração
 // Fases do exercício. "escala" vale no modo normal; "opac" vale quando o
@@ -382,10 +392,8 @@ function fechar() {
 }
 
 // ---------------------------------------------------------- pedido de ajuda
-// O botão só existe na cópia local aberta pelo script do PC, que põe o
-// tópico do cuidador (ntfy.topico_cuidador) no fragmento
-// ("#...&ajuda=<topico>"). O tópico
-// não fica gravado nesta página. Primeiro toque: pede confirmação. Segundo
+// O botão aparece sempre. O tópico é o do fragmento ("#...&ajuda=<topico>",
+// posto pelo script do PC) ou, sem ele, TOPICO_AJUDA_PADRAO. Primeiro toque: pede confirmação. Segundo
 // toque (em até 10 s): envia. Depois de enviado, o botão fica bloqueado por
 // 60 s, para não mandar várias notificações seguidas.
 const NTFY_URL = "https://ntfy.sh/";
@@ -486,14 +494,13 @@ const params = new URLSearchParams(location.hash.slice(1));
 const query = new URLSearchParams(location.search);
 if (params.get("respirar") === "1" || query.get("respirar") === "1") iniciaRespiracao();
 
-// "ajuda" só do fragmento (nunca da query). Inválido ou ausente: o botão
-// continua escondido e a página não acessa a rede.
+// "ajuda" só do fragmento (nunca da query). Inválido ou ausente: usa o
+// padrão. O botão aparece sempre.
 const ajudaFragmento = params.get("ajuda");
-if (ajudaFragmento !== null && RE_TOPICO.test(ajudaFragmento)) {
-  topicoAjuda = ajudaFragmento;
-  $("bt-ajuda").classList.remove("escondido");
-  $("bt-ajuda").addEventListener("click", tocaAjuda);
-}
+topicoAjuda = (ajudaFragmento !== null && RE_TOPICO.test(ajudaFragmento))
+  ? ajudaFragmento
+  : TOPICO_AJUDA_PADRAO;
+$("bt-ajuda").addEventListener("click", tocaAjuda);
 </script>
 </body>
 </html>
