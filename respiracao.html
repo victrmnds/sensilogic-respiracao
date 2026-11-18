@@ -8,14 +8,23 @@
 <!--
   SensiLogic - página de respiração guiada (RF05).
 
-  Página única e estática: não tem segredo, não tem tópico e não acessa a
-  rede. Pode ser aberta direto do disco (file://) ou publicada em qualquer
-  hospedagem estática.
+  Página única e estática: não tem segredo nem tópico gravado. Pode ser
+  aberta direto do disco (file://) ou publicada em qualquer hospedagem
+  estática. Só acessa a rede quando o fragmento traz "ajuda=<topico>" e a
+  pessoa confirma o pedido de ajuda (POST em https://ntfy.sh/<topico>).
+  Sem esse dado (versão pública, link da notificação de crise), o botão
+  "Pedir ajuda" não aparece e a página não acessa nada.
 
-  Parâmetros, no fragmento da URL (o que vem depois do "#"; o fragmento não
-  é enviado ao servidor de hospedagem):
-      respiracao.html#respirar=1     começa o exercício sem clicar
-      respiracao.html#t=<raiz>&respirar=1
+  Parâmetros (qualquer um com respirar=1 começa o exercício sem clicar):
+      respiracao.html?respirar=1     na query: é o link do ntfy da base
+                                     (PAGINA_URL do firmware da semana4)
+      respiracao.html#respirar=1     no fragmento (o que vem depois do "#",
+                                     que não é enviado ao servidor)
+      respiracao.html#t=<raiz>&respirar=1&ajuda=<topico>
+                                     o que o script do PC abre ("ajuda" só
+                                     vem se ntfy.topico_cuidador estiver
+                                     no config.toml)
+  "ajuda" é lido SÓ do fragmento, nunca da query.
   O parâmetro "t" (raiz dos tópicos MQTT) só será usado pelo plano B
   opcional, em que a página assina o broker. Na versão atual ele é ignorado.
 
@@ -38,6 +47,7 @@
     --circulo: #7fb7d9;
     --borda: #2c4370;
     --botao: #2c4f7c;
+    --ajuda: #6b5a2e;      /* âmbar apagado: se destaca sem gritar */
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -137,6 +147,17 @@
     font-size: 15px;
   }
   #aviso-fechar { margin: 8px 0 0; line-height: 1.5; }
+
+  /* botão "Pedir ajuda": alvo maior para toque, cor suave, nada pisca */
+  button.ajuda {
+    background: var(--ajuda);
+    border-color: var(--ajuda);
+    font-size: 19px;
+    min-height: 56px;
+    padding: 12px 30px;
+  }
+  button.ajuda:hover:not(:disabled) { border-color: #c9b27a; }
+  #ajuda-status { margin: 8px 0 0; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -168,6 +189,9 @@
 </main>
 
 <footer>
+  <!-- só aparece com "ajuda=<topico>" no fragmento (cópia aberta pelo PC) -->
+  <button id="bt-ajuda" class="ajuda escondido" type="button">Pedir ajuda</button>
+  <p id="ajuda-status" class="escondido" role="status"></p>
   <button id="bt-som" type="button" aria-pressed="false">Ligar som</button>
   <button id="bt-vibra" type="button" aria-pressed="false">Ligar vibração</button>
   <p id="aviso-fechar" class="escondido" role="status">
@@ -357,6 +381,88 @@ function fechar() {
   setTimeout(() => $("aviso-fechar").classList.remove("escondido"), 400);
 }
 
+// ---------------------------------------------------------- pedido de ajuda
+// O botão só existe na cópia local aberta pelo script do PC, que põe o
+// tópico do cuidador (ntfy.topico_cuidador) no fragmento
+// ("#...&ajuda=<topico>"). O tópico
+// não fica gravado nesta página. Primeiro toque: pede confirmação. Segundo
+// toque (em até 10 s): envia. Depois de enviado, o botão fica bloqueado por
+// 60 s, para não mandar várias notificações seguidas.
+const NTFY_URL = "https://ntfy.sh/";
+const RE_TOPICO = /^[A-Za-z0-9_-]{1,64}$/;   // mesma regra do comum.py
+const CONFIRMA_AJUDA_MS = 10000;   // a confirmação esquecida se desfaz
+const BLOQUEIO_AJUDA_MS = 60000;   // tempo bloqueado depois de enviar
+// Texto genérico, sem nome, idade, local nem batimentos, e diferente da
+// notificação de crise ("SensiLogic: alerta de crise", tag "warning").
+// O título vai num cabeçalho HTTP: só ASCII.
+const AJUDA_TITULO = "SensiLogic: pedido de ajuda";
+const AJUDA_TAGS = "sos";
+const AJUDA_CORPO = "A pessoa pediu ajuda pela página de respiração. " +
+                    "Vá até ela ou entre em contato.";
+
+let topicoAjuda = null;
+let estadoAjuda = "pronto";   // "pronto" | "confirmando" | "enviando" | "bloqueado"
+let timerAjuda = null;
+
+function statusAjuda(texto) {
+  $("ajuda-status").textContent = texto;
+  $("ajuda-status").classList.toggle("escondido", texto === "");
+}
+
+// volta ao estado inicial; "aviso" fica no status (vazio = limpa)
+function voltaAjuda(aviso) {
+  clearTimeout(timerAjuda);
+  estadoAjuda = "pronto";
+  $("bt-ajuda").disabled = false;
+  $("bt-ajuda").textContent = "Pedir ajuda";
+  statusAjuda(aviso || "");
+}
+
+function tocaAjuda() {
+  if (estadoAjuda === "pronto") {
+    estadoAjuda = "confirmando";
+    $("bt-ajuda").textContent = "Enviar pedido de ajuda?";
+    statusAjuda("Toque de novo para enviar.");
+    // sem o segundo toque, desfaz: um toque acidental depois não envia
+    timerAjuda = setTimeout(() => voltaAjuda(""), CONFIRMA_AJUDA_MS);
+  } else if (estadoAjuda === "confirmando") {
+    enviaAjuda();
+  }
+  // "enviando" e "bloqueado": o botão está desativado; nada a fazer
+}
+
+async function enviaAjuda() {
+  clearTimeout(timerAjuda);
+  estadoAjuda = "enviando";
+  $("bt-ajuda").disabled = true;   // impede um segundo POST durante o envio
+  $("bt-ajuda").textContent = "Enviando...";
+  statusAjuda("");
+  let ok = false;
+  try {
+    const resposta = await fetch(NTFY_URL + topicoAjuda, {
+      method: "POST",
+      headers: { "Title": AJUDA_TITULO, "Priority": "high", "Tags": AJUDA_TAGS },
+      body: AJUDA_CORPO,
+      credentials: "omit",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      signal: AbortSignal.timeout(10000),
+    });
+    ok = resposta.ok;
+  } catch (e) {
+    ok = false;   // sem rede ou tempo esgotado
+  }
+  if (!ok) {
+    // nada chegou ao cuidador: não bloqueia, deixa tentar de novo
+    voltaAjuda('Não foi possível enviar. Toque em "Pedir ajuda" para tentar de novo.');
+    return;
+  }
+  estadoAjuda = "bloqueado";
+  $("bt-ajuda").textContent = "Pedido enviado";
+  statusAjuda("O cuidador foi avisado.");
+  timerAjuda = setTimeout(() => voltaAjuda(""), BLOQUEIO_AJUDA_MS);
+}
+
 // ------------------------------------------------------------------- eventos
 $("bt-respirar").addEventListener("click", iniciaRespiracao);
 $("bt-encerrar").addEventListener("click", encerraRespiracao);
@@ -373,9 +479,21 @@ if (!temVibracao()) {
 }
 
 // --------------------------------------------------------------------- início
-// "#respirar=1" (ou "#t=<raiz>&respirar=1") começa sem esperar clique.
+// "respirar=1" começa sem esperar clique, venha ele no fragmento
+// ("#respirar=1", "#t=<raiz>&respirar=1": script do PC) ou na query
+// ("?respirar=1": link do ntfy gravado na base da semana4).
 const params = new URLSearchParams(location.hash.slice(1));
-if (params.get("respirar") === "1") iniciaRespiracao();
+const query = new URLSearchParams(location.search);
+if (params.get("respirar") === "1" || query.get("respirar") === "1") iniciaRespiracao();
+
+// "ajuda" só do fragmento (nunca da query). Inválido ou ausente: o botão
+// continua escondido e a página não acessa a rede.
+const ajudaFragmento = params.get("ajuda");
+if (ajudaFragmento !== null && RE_TOPICO.test(ajudaFragmento)) {
+  topicoAjuda = ajudaFragmento;
+  $("bt-ajuda").classList.remove("escondido");
+  $("bt-ajuda").addEventListener("click", tocaAjuda);
+}
 </script>
 </body>
 </html>
