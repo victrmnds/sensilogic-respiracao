@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>SensiLogic - Respiração guiada</title>
+<!--
+  SensiLogic - página de respiração guiada (RF05).
+
+  Página única e estática: não tem segredo, não tem tópico e não acessa a
+  rede. Pode ser aberta direto do disco (file://) ou publicada em qualquer
+  hospedagem estática.
+
+  Parâmetros, no fragmento da URL (o que vem depois do "#"; o fragmento não
+  é enviado ao servidor de hospedagem):
+      respiracao.html#respirar=1     começa o exercício sem clicar
+      respiracao.html#t=<raiz>&respirar=1
+  O parâmetro "t" (raiz dos tópicos MQTT) só será usado pelo plano B
+  opcional, em que a página assina o broker. Na versão atual ele é ignorado.
+
+  Exercício: inspire 4 s, segure 4 s, expire 4 s, em ciclo.
+
+  Decisões pensadas para uma pessoa que pode estar em sobrecarga sensorial:
+    - som DESLIGADO por padrão (botão para ligar);
+    - vibração DESLIGADA por padrão (botão para ligar);
+    - cores suaves, movimento lento, nada pisca;
+    - com "reduzir movimento" no sistema, o círculo não muda de tamanho:
+      muda só a opacidade, e a contagem em texto fica maior;
+    - o botão "Fechar" e a tecla Esc estão sempre disponíveis.
+-->
+<style>
+  :root {
+    --fundo: #14213d;
+    --fundo-alerta: #1d2f52;
+    --texto: #e8eef7;
+    --suave: #9fb3cf;
+    --circulo: #7fb7d9;
+    --borda: #2c4370;
+    --botao: #2c4f7c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--fundo);
+    color: var(--texto);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100dvh;
+  }
+
+  header {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 18px;
+    color: var(--suave);
+    font-size: 15px;
+  }
+
+  main {
+    flex: 1;
+    width: 100%;
+    max-width: 760px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 20px;
+    text-align: center;
+  }
+  section { width: 100%; }
+  h1 { font-weight: 500; font-size: 28px; margin: 0 0 8px; }
+  p.sub { color: var(--suave); margin: 0 0 24px; font-size: 18px; line-height: 1.5; }
+
+  /* ---- círculo ---- */
+  .palco {
+    width: min(62vmin, 380px);
+    height: min(62vmin, 380px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 12px auto 20px;
+  }
+  .circulo {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 35%, #a9d3ea, var(--circulo) 60%, #5b93b8);
+    box-shadow: 0 0 60px rgba(127, 183, 217, 0.25);
+    transform: scale(0.45);
+    transition-property: transform, opacity;
+    transition-timing-function: ease-in-out;
+    transition-duration: 4s;
+  }
+  .fase { font-size: 32px; font-weight: 500; min-height: 44px; }
+  .contagem { font-size: 20px; color: var(--suave); min-height: 30px; margin-top: 4px; }
+
+  /* reduzir movimento: círculo parado, mais destaque para o texto */
+  body.reduz-movimento .circulo { transform: none; }
+  body.reduz-movimento .contagem { font-size: 48px; color: var(--texto); min-height: 60px; }
+  @media (prefers-reduced-motion: reduce) {
+    .circulo { transform: none; }
+  }
+
+  /* ---- botões ---- */
+  button {
+    font: inherit;
+    font-size: 17px;
+    color: var(--texto);
+    background: transparent;
+    border: 1px solid var(--borda);
+    border-radius: 999px;
+    padding: 10px 22px;
+    min-height: 44px;
+    margin: 6px;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--circulo); }
+  button:focus-visible { outline: 3px solid var(--circulo); outline-offset: 2px; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  button.principal { background: var(--botao); border-color: var(--botao); }
+  button[aria-pressed="true"] { border-color: var(--circulo); }
+  button.fechar { margin: 0; padding: 8px 18px; }
+
+  .escondido { display: none !important; }
+
+  footer {
+    width: 100%;
+    max-width: 760px;
+    padding: 10px 20px 20px;
+    text-align: center;
+    color: var(--suave);
+    font-size: 15px;
+  }
+  #aviso-fechar { margin: 8px 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <strong>SensiLogic</strong>
+  <button id="bt-fechar" class="fechar" type="button" title="Fechar (Esc)">Fechar</button>
+</header>
+
+<main>
+  <noscript><p class="sub">Esta página precisa de JavaScript para guiar a respiração.</p></noscript>
+
+  <!-- tela de espera -->
+  <section id="tela-espera">
+    <h1>Respiração guiada</h1>
+    <p class="sub">Inspire, segure e expire, quatro segundos cada. Sem pressa.</p>
+    <button id="bt-respirar" class="principal" type="button">Respirar agora</button>
+  </section>
+
+  <!-- tela de respiração -->
+  <section id="tela-respira" class="escondido">
+    <h1>Vamos respirar juntos</h1>
+    <p id="motivo" class="sub">Siga o círculo.</p>
+    <div class="palco"><div id="circulo" class="circulo"></div></div>
+    <div id="fase" class="fase" aria-live="polite"></div>
+    <div id="contagem" class="contagem" aria-hidden="true"></div>
+    <button id="bt-encerrar" type="button">Parar</button>
+  </section>
+</main>
+
+<footer>
+  <button id="bt-som" type="button" aria-pressed="false">Ligar som</button>
+  <button id="bt-vibra" type="button" aria-pressed="false">Ligar vibração</button>
+  <p id="aviso-fechar" class="escondido" role="status">
+    Este navegador não permite fechar a janela pelo botão.
+    Saia da tela cheia com F11 e feche com Alt+F4 (ou feche a aba).
+  </p>
+</footer>
+
+<script>
+"use strict";
+
+// ----------------------------------------------------------- configuração
+// Fases do exercício. "escala" vale no modo normal; "opac" vale quando o
+// sistema pede para reduzir movimento.
+const FASES = [
+  { nome: "Inspire devagar", seg: 4, escala: 1.0,  opac: 1.0,  vibra: true  },
+  { nome: "Segure",          seg: 4, escala: 1.0,  opac: 1.0,  vibra: false },
+  { nome: "Expire devagar",  seg: 4, escala: 0.45, opac: 0.35, vibra: false },
+];
+const ESCALA_REPOUSO = 0.45;
+const OPACIDADE_REPOUSO = 0.35;
+
+// ------------------------------------------------------------------ estado
+const $ = (id) => document.getElementById(id);
+const reduzMovimento = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+let respirando = false;
+let timerFase = null;
+let timerContagem = null;
+let somLigado = false;
+let vibraLigado = false;
+let audioCtx = null;
+
+// ---------------------------------------------------------------- reduzir movimento
+function atualizaReduzMovimento() {
+  document.body.classList.toggle("reduz-movimento", reduzMovimento.matches);
+}
+atualizaReduzMovimento();
+// mudou a preferência com a página aberta: vale a partir da próxima fase
+if (reduzMovimento.addEventListener) {
+  reduzMovimento.addEventListener("change", atualizaReduzMovimento);
+}
+
+// --------------------------------------------------------------------- som
+// Desligado por padrão. Navegadores só liberam o áudio depois de um toque,
+// e o botão é esse toque.
+function alternaSom() {
+  somLigado = !somLigado;
+  if (somLigado) {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx.resume();
+    } catch (e) {
+      audioCtx = null;
+      somLigado = false;
+    }
+  }
+  $("bt-som").textContent = somLigado ? "Desligar som" : "Ligar som";
+  $("bt-som").setAttribute("aria-pressed", String(somLigado));
+  if (somLigado) sino();
+}
+
+// tom suave e curto; nada de sirene
+function sino() {
+  if (!somLigado || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  [523.25, 659.25].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t + i * 0.35);
+    g.gain.exponentialRampToValueAtTime(0.1, t + i * 0.35 + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.35 + 1.4);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t + i * 0.35);
+    o.stop(t + i * 0.35 + 1.5);
+  });
+}
+
+// ---------------------------------------------------------------- vibração
+// Desligada por padrão. Só existe onde o navegador oferece a API (Chrome no
+// Android). No iPhone e em boa parte dos PCs ela não existe: o botão fica
+// desativado e nada mais acontece.
+function temVibracao() {
+  return "vibrate" in navigator && typeof navigator.vibrate === "function";
+}
+
+function alternaVibra() {
+  if (!temVibracao()) return;
+  vibraLigado = !vibraLigado;
+  $("bt-vibra").textContent = vibraLigado ? "Desligar vibração" : "Ligar vibração";
+  $("bt-vibra").setAttribute("aria-pressed", String(vibraLigado));
+  if (vibraLigado) vibra(120);
+  else vibra(0);
+}
+
+function vibra(padrao) {
+  if (!temVibracao()) return;
+  if (padrao !== 0 && !vibraLigado) return;
+  try { navigator.vibrate(padrao); } catch (e) { /* ignora */ }
+}
+
+// vibração leve só durante a inspiração: pulsos de 60 ms a cada 500 ms
+function padraoInspire(seg) {
+  const padrao = [];
+  for (let i = 0; i < seg * 2; i++) padrao.push(60, 440);
+  return padrao;
+}
+
+// --------------------------------------------------------------- respiração
+function aplicaFase(fase) {
+  const c = $("circulo");
+  c.style.transitionDuration = fase.seg + "s";
+  if (reduzMovimento.matches) {
+    c.style.transform = "none";
+    c.style.opacity = String(fase.opac);
+  } else {
+    c.style.transform = "scale(" + fase.escala + ")";
+    c.style.opacity = "1";
+  }
+}
+
+function posicaoInicial() {
+  const c = $("circulo");
+  c.style.transitionDuration = "0s";
+  if (reduzMovimento.matches) {
+    c.style.transform = "none";
+    c.style.opacity = String(OPACIDADE_REPOUSO);
+  } else {
+    c.style.transform = "scale(" + ESCALA_REPOUSO + ")";
+    c.style.opacity = "1";
+  }
+  void c.offsetWidth; // força o navegador a assentar o estado antes da animação
+}
+
+function executaFase(i) {
+  const fase = FASES[i];
+  aplicaFase(fase);
+  $("fase").textContent = fase.nome;     // textContent: nada de HTML
+  if (fase.vibra) vibra(padraoInspire(fase.seg));
+  if (i === 0) sino();
+
+  let resta = fase.seg;
+  $("contagem").textContent = String(resta);
+  clearInterval(timerContagem);
+  timerContagem = setInterval(() => {
+    resta--;
+    $("contagem").textContent = resta > 0 ? String(resta) : "";
+  }, 1000);
+
+  timerFase = setTimeout(() => executaFase((i + 1) % FASES.length), fase.seg * 1000);
+}
+
+function iniciaRespiracao() {
+  if (respirando) return;
+  respirando = true;
+  $("tela-espera").classList.add("escondido");
+  $("tela-respira").classList.remove("escondido");
+  $("aviso-fechar").classList.add("escondido");
+  posicaoInicial();
+  executaFase(0);
+}
+
+function encerraRespiracao() {
+  respirando = false;
+  clearTimeout(timerFase);
+  clearInterval(timerContagem);
+  vibra(0);
+  $("fase").textContent = "";
+  $("contagem").textContent = "";
+  $("tela-respira").classList.add("escondido");
+  $("tela-espera").classList.remove("escondido");
+}
+
+// -------------------------------------------------------------------- fechar
+// Para o exercício, sai da tela cheia da página (se houver) e tenta fechar a
+// janela. O navegador só deixa o script fechar janelas abertas por script ou
+// com um único item de histórico (como uma janela --app). Se recusar, a
+// página continua aqui e mostra como sair.
+function fechar() {
+  encerraRespiracao();
+  try {
+    if (document.fullscreenElement) document.exitFullscreen();
+  } catch (e) { /* ignora */ }
+  window.close();
+  setTimeout(() => $("aviso-fechar").classList.remove("escondido"), 400);
+}
+
+// ------------------------------------------------------------------- eventos
+$("bt-respirar").addEventListener("click", iniciaRespiracao);
+$("bt-encerrar").addEventListener("click", encerraRespiracao);
+$("bt-fechar").addEventListener("click", fechar);
+$("bt-som").addEventListener("click", alternaSom);
+$("bt-vibra").addEventListener("click", alternaVibra);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") fechar();
+});
+
+if (!temVibracao()) {
+  $("bt-vibra").disabled = true;
+  $("bt-vibra").textContent = "Vibração indisponível";
+}
+
+// --------------------------------------------------------------------- início
+// "#respirar=1" (ou "#t=<raiz>&respirar=1") começa sem esperar clique.
+const params = new URLSearchParams(location.hash.slice(1));
+if (params.get("respirar") === "1") iniciaRespiracao();
+</script>
+</body>
+</html>
